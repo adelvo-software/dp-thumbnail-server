@@ -104,4 +104,4 @@ Directors Plan features:
 
 ---
 
-© 2026 [Adelvo Inc.](https://adelvo.io) · Delaware, USA
+© 2026 [Adelvo Software](https://adelvo.io)
