@@ -1,0 +1,17 @@
+# Build artifacts
+*.exe
+*.zip
+*.dmg
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+*.swp
+*~
+
+# Go build cache
+/dist/
+/build/
