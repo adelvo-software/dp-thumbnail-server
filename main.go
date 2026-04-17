@@ -28,7 +28,7 @@ import (
 // Copyright (c) 2026 Adelvo.
 // ============================================================
 
-const VERSION = "3.0.0"
+const VERSION = "1.0.0"
 
 type VmixXML struct {
 	XMLName xml.Name   `xml:"vmix"`
