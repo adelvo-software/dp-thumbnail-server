@@ -28,7 +28,7 @@ import (
 // Copyright (c) 2026 Adelvo.
 // ============================================================
 
-const VERSION = "1.0.0"
+const VERSION = "1.1.0"
 
 type VmixXML struct {
 	XMLName xml.Name   `xml:"vmix"`
@@ -42,6 +42,8 @@ type VmixInput struct {
 	Title    string `xml:"title,attr"`
 	State    string `xml:"state,attr"`
 	Duration int    `xml:"duration,attr"`
+	// Video List: items with file path (v1.1.0, see listitems.go)
+	List []VmixListItem `xml:"list>item"`
 }
 
 type ThumbEntry struct {
@@ -72,16 +74,22 @@ var (
 func fetchVmixInputs() ([]VmixInput, error) {
 	c := &http.Client{Timeout: 3 * time.Second}
 	resp, err := c.Get(vmixURL)
-	if err != nil { return nil, fmt.Errorf("cannot reach vMix at %s — is it running?", vmixURL) }
+	if err != nil {
+		return nil, fmt.Errorf("cannot reach vMix at %s — is it running?", vmixURL)
+	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	var v VmixXML
-	if err := xml.Unmarshal(body, &v); err != nil { return nil, fmt.Errorf("invalid XML from vMix") }
+	if err := xml.Unmarshal(body, &v); err != nil {
+		return nil, fmt.Errorf("invalid XML from vMix")
+	}
 	return v.Inputs.Input, nil
 }
 
 func snapshot(input VmixInput, force bool) error {
-	if skipTypes[strings.ToLower(input.Type)] { return nil }
+	if skipTypes[strings.ToLower(input.Type)] {
+		return nil
+	}
 
 	thumbPath := filepath.Join(thumbDir, fmt.Sprintf("%d.jpg", input.Number))
 	keyPath := ""
@@ -93,7 +101,12 @@ func snapshot(input VmixInput, force bool) error {
 	if !force {
 		if _, err := os.Stat(thumbPath); err == nil {
 			e := &ThumbEntry{Number: input.Number, Key: input.Key, Title: input.Title, Type: input.Type, ThumbFile: thumbPath, Updated: fileModTime(thumbPath)}
-			mu.Lock(); entries[input.Number] = e; if input.Key != "" { byKey[input.Key] = e }; mu.Unlock()
+			mu.Lock()
+			entries[input.Number] = e
+			if input.Key != "" {
+				byKey[input.Key] = e
+			}
+			mu.Unlock()
 			return nil
 		}
 	}
@@ -104,7 +117,9 @@ func snapshot(input VmixInput, force bool) error {
 		vmixBase, input.Number, url.QueryEscape(savePath))
 
 	resp, err := http.Get(apiURL)
-	if err != nil { return fmt.Errorf("API call failed for #%d: %v", input.Number, err) }
+	if err != nil {
+		return fmt.Errorf("API call failed for #%d: %v", input.Number, err)
+	}
 	resp.Body.Close()
 
 	// Poll for file (up to 4s)
@@ -112,14 +127,19 @@ func snapshot(input VmixInput, force bool) error {
 	for i := 0; i < 20; i++ {
 		time.Sleep(200 * time.Millisecond)
 		if info, err := os.Stat(savePath); err == nil && info.Size() > 100 {
-			ok = true; break
+			ok = true
+			break
 		}
 	}
-	if !ok { return fmt.Errorf("vMix did not create snapshot for #%d (%s)", input.Number, input.Title) }
+	if !ok {
+		return fmt.Errorf("vMix did not create snapshot for #%d (%s)", input.Number, input.Title)
+	}
 
 	// Read the full-res snapshot
 	data, err := os.ReadFile(savePath)
-	if err != nil { return err }
+	if err != nil {
+		return err
+	}
 
 	// Resize to 320x180 if ffmpeg available, otherwise use as-is
 	if err := resizeJpeg(savePath, thumbPath); err != nil {
@@ -130,19 +150,30 @@ func snapshot(input VmixInput, force bool) error {
 	// Copy to key-based path
 	if keyPath != "" {
 		thumbData, _ := os.ReadFile(thumbPath)
-		if thumbData != nil { os.WriteFile(keyPath, thumbData, 0644) }
+		if thumbData != nil {
+			os.WriteFile(keyPath, thumbData, 0644)
+		}
 	}
 
 	// Cleanup temp snapshot
 	os.Remove(savePath)
 
 	e := &ThumbEntry{Number: input.Number, Key: input.Key, Title: input.Title, Type: input.Type, ThumbFile: thumbPath, Updated: time.Now()}
-	mu.Lock(); entries[input.Number] = e; if input.Key != "" { byKey[input.Key] = e }; mu.Unlock()
+	mu.Lock()
+	entries[input.Number] = e
+	if input.Key != "" {
+		byKey[input.Key] = e
+	}
+	mu.Unlock()
 	return nil
 }
 
 func resizeJpeg(src, dst string) error {
-	cmd := exec.Command("ffmpeg", "-y", "-i", src,
+	tool := findTool("ffmpeg")
+	if tool == "" {
+		return fmt.Errorf("ffmpeg not found")
+	}
+	cmd := exec.Command(tool, "-y", "-i", src,
 		"-vf", "scale=320:180:force_original_aspect_ratio=decrease,pad=320:180:(ow-iw)/2:(oh-ih)/2:black",
 		"-q:v", "5", dst)
 	cmd.Stdout, cmd.Stderr = nil, nil
@@ -150,7 +181,11 @@ func resizeJpeg(src, dst string) error {
 }
 
 func fileModTime(p string) time.Time {
-	info, err := os.Stat(p); if err != nil { return time.Time{} }; return info.ModTime()
+	info, err := os.Stat(p)
+	if err != nil {
+		return time.Time{}
+	}
+	return info.ModTime()
 }
 
 func fileExists(p string) bool { _, e := os.Stat(p); return e == nil }
@@ -160,17 +195,29 @@ func fileExists(p string) bool { _, e := os.Stat(p); return e == nil }
 func regenerateAll(force bool) (gen, skip, errs int, dur time.Duration) {
 	start := time.Now()
 	inputs, err := fetchVmixInputs()
-	if err != nil { log.Printf("❌ %v", err); return 0, 0, 1, time.Since(start) }
+	if err != nil {
+		log.Printf("❌ %v", err)
+		return 0, 0, 1, time.Since(start)
+	}
 	log.Printf("📋 %d inputs from vMix", len(inputs))
 
 	for _, inp := range inputs {
-		if skipTypes[strings.ToLower(inp.Type)] { continue }
+		if skipTypes[strings.ToLower(inp.Type)] {
+			continue
+		}
 		e := snapshot(inp, force)
 		if e != nil {
-			log.Printf("  ⚠️  %v", e); errs++
+			log.Printf("  ⚠️  %v", e)
+			errs++
 		} else {
-			mu.RLock(); en := entries[inp.Number]; mu.RUnlock()
-			if en != nil && !force && en.Updated.Before(start) { skip++ } else { gen++ }
+			mu.RLock()
+			en := entries[inp.Number]
+			mu.RUnlock()
+			if en != nil && !force && en.Updated.Before(start) {
+				skip++
+			} else {
+				gen++
+			}
 		}
 	}
 	dur = time.Since(start)
@@ -182,22 +229,42 @@ func regenerateAll(force bool) (gen, skip, errs int, dur time.Duration) {
 
 func autoRefreshLoop(stop chan struct{}) {
 	for {
-		select { case <-stop: return; default: }
+		select {
+		case <-stop:
+			return
+		default:
+		}
 
 		inputs, err := fetchVmixInputs()
-		if err != nil { time.Sleep(5 * time.Second); continue }
+		if err != nil {
+			time.Sleep(5 * time.Second)
+			continue
+		}
 
-		if len(inputs) == 0 { time.Sleep(5 * time.Second); continue }
+		if len(inputs) == 0 {
+			time.Sleep(5 * time.Second)
+			continue
+		}
 
 		for _, inp := range inputs {
-			select { case <-stop: return; default: }
-			if skipTypes[strings.ToLower(inp.Type)] { continue }
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if skipTypes[strings.ToLower(inp.Type)] {
+				continue
+			}
 			snapshot(inp, true)
 			// ~2 snapshots/sec to not overload vMix
 			time.Sleep(500 * time.Millisecond)
 		}
 
-		select { case <-stop: return; case <-time.After(2 * time.Second): }
+		select {
+		case <-stop:
+			return
+		case <-time.After(2 * time.Second):
+		}
 	}
 }
 
@@ -205,18 +272,34 @@ func autoRefreshLoop(stop chan struct{}) {
 
 func handleIndex(w http.ResponseWriter, r *http.Request) {
 	p := r.URL.Path
-	if p == "/" { w.Header().Set("Content-Type", "text/html; charset=utf-8"); fmt.Fprint(w, indexHTML); return }
+	if p == "/" {
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		fmt.Fprint(w, indexHTML)
+		return
+	}
 	if strings.HasSuffix(p, ".jpg") {
 		n := strings.TrimSuffix(strings.TrimPrefix(p, "/"), ".jpg")
-		if num, err := strconv.Atoi(n); err == nil { serveThumb(w, num); return }
+		if num, err := strconv.Atoi(n); err == nil {
+			serveThumb(w, num)
+			return
+		}
 	}
 	http.NotFound(w, r)
 }
 
 func serveThumb(w http.ResponseWriter, num int) {
-	mu.RLock(); e, ok := entries[num]; mu.RUnlock()
-	if !ok { http.Error(w, "Not found", 404); return }
-	d, err := os.ReadFile(e.ThumbFile); if err != nil { http.Error(w, "Error", 500); return }
+	mu.RLock()
+	e, ok := entries[num]
+	mu.RUnlock()
+	if !ok {
+		http.Error(w, "Not found", 404)
+		return
+	}
+	d, err := os.ReadFile(e.ThumbFile)
+	if err != nil {
+		http.Error(w, "Error", 500)
+		return
+	}
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "max-age=10")
 	w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -224,9 +307,17 @@ func serveThumb(w http.ResponseWriter, num int) {
 }
 
 func handleKeyThumb(w http.ResponseWriter, r *http.Request) {
+	if handleListItemRoute(w, r) {
+		return
+	} // /key/<key>/items.json, /key/<key>/item/<n>.jpg
 	k := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/key/"), ".jpg")
-	mu.RLock(); e, ok := byKey[k]; mu.RUnlock()
-	if !ok { http.Error(w, "Not found", 404); return }
+	mu.RLock()
+	e, ok := byKey[k]
+	mu.RUnlock()
+	if !ok {
+		http.Error(w, "Not found", 404)
+		return
+	}
 	d, _ := os.ReadFile(e.ThumbFile)
 	w.Header().Set("Content-Type", "image/jpeg")
 	w.Header().Set("Cache-Control", "max-age=10")
@@ -235,15 +326,21 @@ func handleKeyThumb(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleRegen(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json"); w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if strings.HasPrefix(r.URL.Path, "/regen/") {
 		if num, err := strconv.Atoi(strings.TrimPrefix(r.URL.Path, "/regen/")); err == nil {
-			mu.RLock(); e, ok := entries[num]; mu.RUnlock()
+			mu.RLock()
+			e, ok := entries[num]
+			mu.RUnlock()
 			if ok {
 				er := snapshot(VmixInput{Number: e.Number, Key: e.Key, Title: e.Title, Type: e.Type}, true)
-				if er != nil { json.NewEncoder(w).Encode(map[string]interface{}{"error": er.Error()}) } else {
+				if er != nil {
+					json.NewEncoder(w).Encode(map[string]interface{}{"error": er.Error()})
+				} else {
 					json.NewEncoder(w).Encode(map[string]interface{}{"status": "ok", "input": num})
-				}; return
+				}
+				return
 			}
 		}
 	}
@@ -252,7 +349,8 @@ func handleRegen(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleThumbnails(w http.ResponseWriter, r *http.Request) {
-	mu.RLock(); defer mu.RUnlock()
+	mu.RLock()
+	defer mu.RUnlock()
 	type TR struct {
 		Number int    `json:"number"`
 		Key    string `json:"key"`
@@ -262,16 +360,21 @@ func handleThumbnails(w http.ResponseWriter, r *http.Request) {
 	}
 	var out []TR
 	for _, e := range entries {
-		d, err := os.ReadFile(e.ThumbFile); if err != nil { continue }
+		d, err := os.ReadFile(e.ThumbFile)
+		if err != nil {
+			continue
+		}
 		out = append(out, TR{Number: e.Number, Key: e.Key, Title: e.Title, Type: e.Type,
 			Base64: "data:image/jpeg;base64," + base64.StdEncoding.EncodeToString(d)})
 	}
-	w.Header().Set("Content-Type", "application/json"); w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	json.NewEncoder(w).Encode(out)
 }
 
 func handleSettings(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json"); w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if r.Method == "POST" {
 		var s struct {
 			VmixHost string `json:"vmixHost"`
@@ -284,7 +387,9 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 			log.Printf("⚙️  vMix → %s", vmixURL)
 		}
 	}
-	mu.RLock(); c := len(entries); mu.RUnlock()
+	mu.RLock()
+	c := len(entries)
+	mu.RUnlock()
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"vmixUrl": vmixURL, "port": serverPort,
 		"count": c, "version": VERSION, "autoRefresh": autoRefresh,
@@ -292,10 +397,13 @@ func handleSettings(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleAutoRefresh(w http.ResponseWriter, r *http.Request) {
-	w.Header().Set("Content-Type", "application/json"); w.Header().Set("Access-Control-Allow-Origin", "*")
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	if autoRefresh {
 		autoRefresh = false
-		if autoRefreshStop != nil { close(autoRefreshStop) }
+		if autoRefreshStop != nil {
+			close(autoRefreshStop)
+		}
 		log.Println("⏸  Auto-refresh stopped")
 	} else {
 		autoRefresh = true
@@ -307,18 +415,26 @@ func handleAutoRefresh(w http.ResponseWriter, r *http.Request) {
 }
 
 func handleClear(w http.ResponseWriter, r *http.Request) {
-	mu.Lock(); entries = make(map[int]*ThumbEntry); byKey = make(map[string]*ThumbEntry); mu.Unlock()
-	os.RemoveAll(thumbDir); os.MkdirAll(thumbDir, 0755)
-	w.Header().Set("Content-Type", "application/json"); w.Header().Set("Access-Control-Allow-Origin", "*")
+	mu.Lock()
+	entries = make(map[int]*ThumbEntry)
+	byKey = make(map[string]*ThumbEntry)
+	mu.Unlock()
+	os.RemoveAll(thumbDir)
+	os.MkdirAll(thumbDir, 0755)
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Access-Control-Allow-Origin", "*")
 	fmt.Fprint(w, `{"status":"cleared"}`)
 }
 
 func openBrowser(u string) {
 	var cmd *exec.Cmd
 	switch runtime.GOOS {
-	case "windows": cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
-	case "darwin": cmd = exec.Command("open", u)
-	default: cmd = exec.Command("xdg-open", u)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", u)
+	case "darwin":
+		cmd = exec.Command("open", u)
+	default:
+		cmd = exec.Command("xdg-open", u)
 	}
 	cmd.Start()
 }
@@ -362,6 +478,13 @@ a{color:var(--accent);text-decoration:none}a:hover{text-decoration:underline}
 .tc{position:relative}
 .tc .refresh-hint{display:none;position:absolute;top:4px;right:4px;background:rgba(0,0,0,.7);color:var(--text2);font-size:9px;padding:2px 6px;border-radius:4px;pointer-events:none}
 .tc:hover .refresh-hint{display:block}
+.inf a{color:var(--accent);text-decoration:none}
+.items{display:flex;flex-direction:column;gap:3px;margin-top:4px}
+.items .it{display:grid;grid-template-columns:64px 1fr auto;gap:6px;align-items:center;font-size:10px;color:var(--text2)}
+.items .it img{width:64px;height:36px;object-fit:cover;border-radius:3px;background:#000}
+.items .it span{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.items .it.sel span{color:var(--accent);font-weight:700}
+.items .it-msg{font-size:10px;color:var(--text2)}
 .ctx{position:fixed;background:var(--surface);border:1px solid var(--surface2);border-radius:8px;padding:4px 0;z-index:999;box-shadow:0 8px 24px rgba(0,0,0,.5);min-width:160px;display:none}
 .ctx div{padding:8px 14px;font-size:13px;cursor:pointer;display:flex;align-items:center;gap:8px}
 .ctx div:hover{background:var(--surface2)}
@@ -431,10 +554,15 @@ function openFull(){if(!ctxInput)return;document.getElementById('ctx').style.dis
 async function loadSettings(){try{const r=await(await fetch('/settings')).json();const u=new URL(r.vmixUrl||'http://localhost:8088/api/');document.getElementById('sHost').value=u.hostname;document.getElementById('sPort').value=u.port;const n=r.count||0;document.getElementById('connStatus').textContent=n>0?'🟢 vMix · '+n+' inputs':'🟡 Ready';const ab=document.getElementById('arBtn');if(r.autoRefresh){ab.textContent='⏸ Stop';ab.classList.add('btn-active')}else{ab.textContent='🔄 Auto-Refresh';ab.classList.remove('btn-active')}}catch(e){document.getElementById('connStatus').textContent='🔴 Error'}}
 async function saveHost(){const b={vmixHost:document.getElementById('sHost').value.trim(),vmixPort:document.getElementById('sPort').value.trim()};await fetch('/settings',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(b)})}
 async function gen(){await saveHost();const b=document.getElementById('bv'),s=document.getElementById('vs');b.disabled=1;b.innerHTML='<span class="sp"></span>Generating...';s.innerHTML='<span class="sp"></span>Connecting to vMix...';try{const r=await(await fetch('/regen')).json();s.textContent=r.generated+' new · '+r.skipped+' cached · '+r.errors+' errors · '+r.duration;lt();loadSettings()}catch(e){s.textContent='Error: '+e.message}b.disabled=0;b.textContent='⚡ Generate All'}
-async function lt(){try{const t=await(await fetch('/thumbnails')).json();const n=t?t.length:0;document.getElementById('tc').textContent=n;document.getElementById('empty').style.display=n?'none':'block';if(!t||!n){document.getElementById('tg').innerHTML='';return}t.sort((a,b)=>a.number-b.number);document.getElementById('tg').innerHTML=t.map(x=>'<div class="tc" data-num="'+x.number+'" oncontextmenu="showCtx(event,'+x.number+',\''+x.key+'\',\''+x.title.replace(/'/g,"\\'")+'\')"><img src="'+x.base64+'" loading="lazy"><div class="refresh-hint">Right-click to refresh</div><div class="inf"><div class="nm">#'+x.number+' '+x.title+'</div><div class="mt">'+x.type+'</div></div></div>').join('')}catch(e){}}
+async function lt(){try{const t=await(await fetch('/thumbnails')).json();const n=t?t.length:0;document.getElementById('tc').textContent=n;document.getElementById('empty').style.display=n?'none':'block';if(!t||!n){document.getElementById('tg').innerHTML='';return}t.sort((a,b)=>a.number-b.number);document.getElementById('tg').innerHTML=t.map(x=>'<div class="tc" data-num="'+x.number+'" oncontextmenu="showCtx(event,'+x.number+',\''+x.key+'\',\''+x.title.replace(/'/g,"\\'")+'\')"><img src="'+x.base64+'" loading="lazy"><div class="refresh-hint">Right-click to refresh</div><div class="inf"><div class="nm">#'+x.number+' '+x.title+'</div><div class="mt">'+x.type+(/list/i.test(x.type)?' · <a href="#" onclick="return showItems(event,\''+x.key+'\',this)">items ▾</a>':'')+'</div><div class="items"></div></div></div>').join('')}catch(e){}}
+function fmtMs(ms){if(!ms)return'';const s=Math.round(ms/1000);return Math.floor(s/60)+':'+String(s%60).padStart(2,'0')}
+async function showItems(ev,key,a){ev.preventDefault();ev.stopPropagation();const box=a.closest('.inf').querySelector('.items');if(box.innerHTML){box.innerHTML='';a.textContent='items ▾';return false}box.innerHTML='<div class="it-msg">loading…</div>';try{const r=await(await fetch('/key/'+key+'/items.json')).json();box.innerHTML=r.items.map(i=>'<div class="it'+(i.selected?' sel':'')+'"'+(i.exists?'':' title="file not found on this machine"')+'><img src="'+i.thumb+'?v='+Date.now()+'" onerror="this.style.visibility=\'hidden\'"><span>'+i.index+' · '+i.name+'</span><b>'+fmtMs(i.durationMs)+'</b></div>').join('')+(r.ffprobe?'':'<div class="it-msg">install ffmpeg (incl. ffprobe) for item thumbnails and durations</div>');a.textContent='items ▴'}catch(e){box.innerHTML='<div class="it-msg">error</div>'}return false}
 async function toggleAR(){await saveHost();try{await(await fetch('/autorefresh',{method:'POST'})).json();loadSettings()}catch(e){}}
 async function ca(){if(!confirm('Clear all?'))return;await fetch('/clear');lt();loadSettings()}
 loadSettings();lt();
+// v1.1.0: if the page opened before the startup run finished (vMix not running yet),
+// keep refreshing until the count is stable (max. 2 min).
+(function(){let last=-1,stable=0,n=0;const iv=setInterval(async()=>{n++;await lt();loadSettings();const c=parseInt(document.getElementById('tc').textContent||'0',10);if(c>0&&c===last){stable++}else{stable=0}last=c;if(stable>=2||n>=60)clearInterval(iv)},2000)})();
 </script></body></html>`
 
 // --- Main ---
@@ -448,9 +576,15 @@ func main() {
 	os.MkdirAll(snapDir, 0755)
 
 	vmixHost, vmixPort := "localhost", "8088"
-	if len(os.Args) > 1 { serverPort = os.Args[1] }
-	if len(os.Args) > 2 { vmixHost = os.Args[2] }
-	if len(os.Args) > 3 { vmixPort = os.Args[3] }
+	if len(os.Args) > 1 {
+		serverPort = os.Args[1]
+	}
+	if len(os.Args) > 2 {
+		vmixHost = os.Args[2]
+	}
+	if len(os.Args) > 3 {
+		vmixPort = os.Args[3]
+	}
 
 	vmixBase = fmt.Sprintf("http://%s:%s", vmixHost, vmixPort)
 	vmixURL = vmixBase + "/api/"
@@ -469,14 +603,30 @@ func main() {
 	log.Printf("   %s", serverURL)
 	log.Printf("   vMix: %s", vmixURL)
 
-	go func() { time.Sleep(500 * time.Millisecond); openBrowser(serverURL) }()
+	// v1.1.0: open the browser only AFTER the startup run, so the page shows all
+	// thumbnails right away. If vMix is not reachable at startup, open immediately
+	// (the page refreshes itself until the count is stable).
+	var browserOnce sync.Once
+	openBrowserOnce := func() { browserOnce.Do(func() { openBrowser(serverURL) }) }
 
 	// Auto-generate on startup
 	go func() {
 		time.Sleep(2 * time.Second)
 		log.Println("🔄 Auto-generating thumbnails from vMix...")
+		// v1.1.0: if vMix is not running yet, retry every 5 s (max. 10 min)
+		for try := 0; try < 120; try++ {
+			if _, err := fetchVmixInputs(); err == nil {
+				break
+			}
+			if try == 0 {
+				log.Println("⏳ vMix not reachable yet — retrying every 5 s")
+				openBrowserOnce()
+			}
+			time.Sleep(5 * time.Second)
+		}
 		g, s, e, d := regenerateAll(false)
 		log.Printf("🏁 %d new, %d cached, %d errors (%s)", g, s, e, d.Round(time.Millisecond))
+		openBrowserOnce()
 	}()
 
 	log.Fatal(http.ListenAndServe("0.0.0.0:"+serverPort, nil))
