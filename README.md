@@ -1,5 +1,7 @@
 # 🎬 Directors Plan Thumbnail Server
 
+[![Support my work on Ko-fi](https://img.shields.io/badge/%E2%99%A5_Support_my_work-Ko--fi-FF5E5B?style=for-the-badge&logo=ko-fi&logoColor=white)](https://ko-fi.com/adelvo)
+
 **Fast vMix input thumbnail generator — replaces [vmix-snapshot-proxy](https://github.com/jeffmikels/vmix-snapshot-proxy).**
 
 Generate preview thumbnails for every vMix input over the network. Single `.exe`, zero configuration, just start and go.
